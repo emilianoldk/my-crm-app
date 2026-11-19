@@ -9,21 +9,23 @@ PRIORIDAD DE REGLAS
 2. Utilizar todos los datos confirmados en el historial (no volver a preguntar lo que ya se sabe).
 3. Responder primero la consulta del cliente, de forma muy breve.
 4. Hacé UNA SOLA PREGUNTA a la vez. Los clientes no leen textos largos.
-5. Para cotizaciones, la secuencia obligatoria es: (1) Producto, (2) Peso o Volumen, (3) Valor FOB, (4) Posición Arancelaria. Pedí solo el que falta.
+5. Para cotizaciones, la secuencia obligatoria es: (1) Producto, (2) Peso o Volumen (si es carga pesada o marítima, SIEMPRE pedir m³ o medidas), (3) Valor FOB, (4) Posición Arancelaria. Pedí solo el que falta.
 6. ACTITUD CLOSER: Una vez entregada la cotización, no preguntes "¿qué te parece?". Usá llamados a la acción directos: "¿Avanzamos con esta opción para congelar la tarifa?", "¿Te derivo con un asesor para coordinar el embarque?" o "¿Qué modalidad elegís para que reservemos el lugar?".
-7. Responder exclusivamente con JSON válido.
+7. Si el cliente se queja del precio o dice que está mal calculado, NO repitas el cierre mecánicamente: validá su duda, aclarale qué dato hace falta revisar (por ejemplo m³ exactos) u ofrecele derivarlo con un asesor humano.
+8. Responder exclusivamente con JSON válido.
 `;
 
 const SOL_COMPACT_PROMPT = `Sos SOL, asesora comercial y closer de DE CHINA AL MUNDO. Español argentino, cálida pero enfocada en cerrar. Mensajes cortos, ideales para WhatsApp. UNA pregunta por mensaje.
 Regla vital: Si ya tenés un dato en el historial, NO lo vuelvas a preguntar. 
-Para cotizar seguí estrictamente las reglas de negocio de modalidad según el tamaño de la carga:
-- Carga menor a 300 kg y a 0,5 m³: Cotizar Marítimo por m³ (o Courier si es aéreo).
-- Mayor o igual a 1 m³ (sin factor kg): Se cotiza All Inclusive.
-- Mayor a 3 m³: Tarifa de 300 a 400 USD por m³.
-- Aéreo: 20 USD por kg.
+Regla de modalidades según el tamaño de la carga:
+- Carga menor a 300 kg y a 0,5 m³: Cotizar Marítimo por m³ (o Aéreo/Courier si pide avión).
+- Mayor o igual a 1 m³ (o carga pesada >= 300 kg por barco): Se cotiza Marítimo / All Inclusive usando SIEMPRE los m³ (NUNCA multiplicar kilos por 20 USD en cargas marítimas o pesadas).
+- Si la Etapa indica pedir volumen (m³), pedile al cliente cuántos m³ ocupa la carga (o largo, ancho y alto del palé/cajas) ANTES de pasar cualquier precio.
+- Mayor a 3 m³: Tarifa de 300 USD por m³ (hasta 3 m³: 400 USD por m³).
+- Aéreo: 20 USD por kg (solo si el cliente pide avión o carga liviana).
 Honorarios = 35, Seguro = FOB * 0.03, Impuestos y Aduana = Cálculo aduanero real según posición arancelaria.
 
-Si en el ESTADO ya vienen las cuentas hechas en "calculoOficial", usá EXACTAMENTE esos números para armar el presupuesto tal cual este formato de salida obligatorio para WhatsApp:
+Si en el ESTADO ya vienen las cuentas hechas en "calculoOficial", usá EXACTAMENTE esos números y EXACTAMENTE la "modalidadCalculada" que figura ahí para armar el presupuesto tal cual este formato de salida obligatorio para WhatsApp:
 
 *COTIZACIÓN DE IMPORTACIÓN - DE CHINA AL MUNDO*
 ----------------------------------------
@@ -31,7 +33,7 @@ Si en el ESTADO ya vienen las cuentas hechas en "calculoOficial", usá EXACTAMEN
 📦 Producto: [Producto]
 📑 Posición Arancelaria: [Posición o A clasificar]
 🌐 Término: [Incoterm o FOB]
-🚢 Modalidad: [Modalidad seleccionada]
+🚢 Modalidad: [Usar exactamente calculoOficial.modalidadCalculada]
 ----------------------------------------
 ✈️ Flete Internacional: $[Monto] USD
 🛡️ Seguro Estimado: $[Monto] USD
@@ -40,13 +42,15 @@ Si en el ESTADO ya vienen las cuentas hechas en "calculoOficial", usá EXACTAMEN
 ----------------------------------------
 💰 TOTAL ESTIMADO DE LA OPERACIÓN: $[Monto] USD
 
-Cierre: Nunca digas "¿qué te parece?". Usá "¿Avanzamos con esto para reservar tu lugar?" o "¿Con cuál de las dos opciones avanzamos?".
-Respondé SOLO un objeto JSON con las claves EXACTAS: "intent", "suggestedStatus", "extractedData" (objeto) y "replyMessage" (texto con el formato de cotización exacto de arriba).`;
+Si "calculoOficial" es null, NO inventes precios ni totales: pedí únicamente el dato faltante según la Etapa.
+Cierre: Si acabás de pasar la cotización, cerrá con "¿Avanzamos con esto para reservar tu lugar?" o "¿Te derivo con un asesor para coordinar el embarque?".
+Objeciones: Si el cliente dice que es caro, que es mucha plata o que está mal, NO repitas "¿Avanzamos con esto para reservar tu lugar?". Respondé con empatía y ofrecele revisar las medidas exactas o pasarlo con un asesor comercial para optimizar la tarifa.
+Respondé SOLO un objeto JSON con las claves EXACTAS: "intent", "suggestedStatus", "extractedData" (objeto) y "replyMessage" (texto).`;
 
 const num = v => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null;
 const allRx = /all\s*[- ]?inclusive|all\s*in\b/i;
 const airRx = /\b(?:a[eé]re[oa]|courier|lo\s+m[aá]s\s+r[aá]pido|r[aá]pido|urgente|avi[oó]n)\b/i;
-const seaRx = /\b(?:mar[ií]tim[oa]|lcl|importa en grupo|barco)\b/i;
+const seaRx = /\b(?:mar[ií]tim[oa]s?|lcl|importa en grupo|barcos?|buque)\b/i;
 const getValue = v => Number(String(v).replace(/\s/g, '').replace(/\.(?=\d{3}(?:\D|$))/g, '').replace(',', '.'));
 
 function productFromHistory(history, savedProduct) {
@@ -105,13 +109,13 @@ function factsFromHistory(history, saved = {}) {
     
     if (m.sender === 'me') {
       if (/valor\s*(?:fob|total)?|(?:cu[aá]nto|qu[eé])\s*(?:pag[aá]s?|vale|cuesta)|compra/i.test(t)) pending = 'goodsValue';
-      else if (/metros?\s*c[uú]bicos?|\bm[³3]\b|\bcbm\b/i.test(t)) pending = 'cbm';
+      else if (/metros?\s*c[uú]bicos?|\bm[³3]\b|\bcbm\b|volumen|medidas/i.test(t)) pending = 'cbm';
       else if (/peso|kilos?|\bkg\b/i.test(t)) pending = 'weightKg';
       else if (/posici[oó]n|arancelaria|\bhscode\b/i.test(t)) pending = 'hscode';
       continue;
     }
     
-    const complainingPrice = /(?:car[ií]simo|muy\s+caro|por\s+qu[eé]\s+tan\s+caro|ni\s+loco|no\s+es\s+rentable|2[.,]?335\s*por)/i.test(t);
+    const complainingPrice = /(?:car[ií]simo|muy\s+caro|por\s+qu[eé]\s+tan\s+caro|ni\s+loco|no\s+es\s+rentable|mucha\s+plata|est[aá]s\s+(?:un\s+poco\s+)?mal|un\s+disparate|2[.,]?335\s*por)/i.test(t);
     if (complainingPrice && facts.shippingMode === 'all_inclusive') {
       facts.shippingMode = null;
     } else if (allRx.test(t) && !complainingPrice) {
@@ -123,6 +127,8 @@ function factsFromHistory(history, saved = {}) {
     }
     
     const wt = t.match(/(\d[\d.,]*)\s*(?:kg\b|kilos?\b|kilogramos?\b)/i);
+    const tnNum = t.match(/(\d[\d.,]*)\s*(?:toneladas?|tons?\b|tn\b)/i);
+    const tnWord = /\b(?:una|1)\s*tonelada\b/i.test(t);
     const isRatePerKg = /(?:por|\/)\s*(?:kg|kilo)/i.test(t);
     const fobPrefix = t.match(/(?:usd|u\$s|us\$|d[oó]lares?|fob|precio|valor)\s*[:$]?\s*(\d[\d.,]*)/i);
     const fobSuffix = t.match(/(\d[\d.,]*)\s*(?:usd|u\$s|us\$|d[oó]lares?|\bfob\b)/i);
@@ -132,6 +138,9 @@ function factsFromHistory(history, saved = {}) {
     const ncmMatch = t.match(/\b\d{4}\.?\d{2}\.?\d{2}\b/);
     
     if (wt && num(getValue(wt[1]))) facts.weightKg = getValue(wt[1]);
+    else if (tnNum && num(getValue(tnNum[1]))) facts.weightKg = getValue(tnNum[1]) * 1000;
+    else if (tnWord) facts.weightKg = 1000;
+
     if (fobMatch && num(getValue(fobMatch[1]))) facts.goodsValue = getValue(fobMatch[1]);
     if (volume && num(getValue(volume[1]))) facts.cbm = getValue(volume[1]);
     if (ncmMatch) facts.hscode = ncmMatch[0];
@@ -145,14 +154,26 @@ function factsFromHistory(history, saved = {}) {
     pending = null;
   }
 
-  // APLICACIÓN DE REGLAS DE ARIEL: Si es menor a 300 kg y 0.5 m3, se descarta all_inclusive y se guía a marítimo/courier
+  // APLICACIÓN DE REGLAS DE NEGOCIO:
+  // 1) Si es menor a 300 kg y menor a 0.5 m3, se descarta all_inclusive y se guía a marítimo/courier
   if (facts.weightKg != null && facts.weightKg < 300 && facts.cbm != null && facts.cbm < 0.5) {
     if (facts.shippingMode === 'all_inclusive') facts.shippingMode = 'maritimo';
-  } else if (facts.cbm != null && facts.cbm >= 1) {
+  } else if (facts.cbm != null && facts.cbm >= 1 && facts.shippingMode !== 'aereo') {
     facts.shippingMode = 'all_inclusive';
+  } else if (facts.weightKg != null && facts.weightKg >= 300 && facts.shippingMode !== 'aereo') {
+    // Cargas de 300 kg o más van por barco por defecto (salvo que pidan avión explícitamente)
+    if (!facts.shippingMode) facts.shippingMode = 'maritimo';
   }
 
   return facts;
+}
+
+function isSeaShipment(facts) {
+  if (facts.shippingMode === 'aereo') return false;
+  if (facts.shippingMode === 'maritimo' || facts.shippingMode === 'all_inclusive') return true;
+  if (facts.cbm != null) return true;
+  if (facts.weightKg != null && facts.weightKg >= 300) return true;
+  return false;
 }
 
 function calculateRealTaxes(fob, freight, insurance, hscode) {
@@ -191,21 +212,35 @@ function buildStandardCalculations(facts) {
   const cbm = facts.cbm;
   if (fob == null || (kg == null && cbm == null)) return null;
 
+  const sea = isSeaShipment(facts);
+
+  // FRENO DE SEGURIDAD: Si es marítimo o pesa >= 300 kg y NO tenemos los m³, no se calcula nada
+  if (sea && cbm == null) return null;
+  // Si pidió aéreo pero no tenemos los kilos, no se calcula nada
+  if (!sea && kg == null) return null;
+
   const hon = 35;
   const seg = Math.round(fob * 0.03 * 100) / 100;
   
   let fleteUSD = 0;
-  if (kg != null) fleteUSD = kg * 20; 
-  if (cbm != null) {
-    // Regla de tarifas por volumen según m3
+  let modalidadCalculada = 'Aéreo';
+
+  if (sea) {
     const ratePerCbm = cbm > 3 ? 300 : 400;
-    fleteUSD = cbm * ratePerCbm;
+    fleteUSD = Math.round(cbm * ratePerCbm * 100) / 100;
+    modalidadCalculada = (facts.shippingMode === 'all_inclusive' || cbm >= 1)
+      ? 'Marítimo All Inclusive'
+      : 'Marítimo por m³';
+  } else {
+    fleteUSD = Math.round(kg * 20 * 100) / 100;
+    modalidadCalculada = 'Aéreo';
   }
 
   const taxesData = calculateRealTaxes(fob, fleteUSD, seg, facts.hscode);
   const totalLogistics = Math.round((fleteUSD + hon + seg + taxesData.totalTaxes) * 100) / 100;
 
   return {
+    modalidadCalculada,
     fobUSD: fob,
     honorariosUSD: hon,
     seguroUSD: seg,
@@ -226,11 +261,14 @@ export default async function handler(req, res) {
 
     const facts = factsFromHistory(conversationHistory, quoteData);
     const calculoOficial = buildStandardCalculations(facts);
+    const needsCbmForSea = isSeaShipment(facts) && facts.cbm == null;
 
     const lastClientMessage = [...conversationHistory].reverse().find(m => m.sender !== 'me');
     const previousQuotes = conversationHistory.filter(m => m.sender === 'me' && /COTIZACI[OÓ]N DE IMPORTACI[OÓ]N/i.test(String(m.text || '')));
+    
     const currentStage = !facts.product ? 'IDENTIFICAR PRODUCTO' :
       (facts.weightKg == null && facts.cbm == null) ? 'PEDIR PESO O VOLUMEN' :
+      needsCbmForSea ? 'PEDIR VOLUMEN EN M3 (O MEDIDAS DEL PALÉ/CAJAS) PARA COTIZAR MARÍTIMO' :
       facts.goodsValue == null ? 'PEDIR FOB' : 'COTIZAR Y CERRAR VENTA';
       
     const shortHistory = conversationHistory.slice(-10).map(msg => ({
@@ -243,8 +281,8 @@ export default async function handler(req, res) {
       { role: 'system', content: `ESTADO: ${JSON.stringify({
         product: facts.product, weightKg: facts.weightKg, cbm: facts.cbm,
         goodsValue: facts.goodsValue, hscode: facts.hscode, shippingMode: facts.shippingMode,
-        calculoOficial
-      })}. Etapa: ${currentStage}. ¿Ya se cotizó?: ${previousQuotes.length > 0}. Último msj: ${JSON.stringify(lastClientMessage?.text || '')}. Hacé UNA SOLA PREGUNta. Sé cerradora.` },
+        needsCbmForSea, calculoOficial
+      })}. Etapa: ${currentStage}. ¿Ya se cotizó?: ${previousQuotes.length > 0}. Último msj: ${JSON.stringify(lastClientMessage?.text || '')}. Hacé UNA SOLA PREGUNTA.` },
       ...shortHistory
     ];
 
@@ -294,7 +332,7 @@ export default async function handler(req, res) {
     parsedData.replyMessage = candidate.trim();
 
     parsedData.extractedData = { ...(parsedData.extractedData || {}) };
-    for (const key of ['product', 'weightKg', 'goodsValue', 'cbm', 'hscode']) {
+    for (const key of ['product', 'weightKg', 'goodsValue', 'cbm', 'hscode', 'shippingMode']) {
       if (facts[key] != null && (parsedData.extractedData[key] == null || parsedData.extractedData[key] === '')) {
         parsedData.extractedData[key] = facts[key];
       }
